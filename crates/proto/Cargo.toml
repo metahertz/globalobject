@@ -1,0 +1,12 @@
+[package]
+name = "globalobject-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+globalobject-crypto.workspace = true
+globalobject-policy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true

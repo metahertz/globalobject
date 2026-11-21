@@ -1,0 +1,9 @@
+[package]
+name = "globalobject-segment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reed-solomon-erasure.workspace = true
+thiserror.workspace = true

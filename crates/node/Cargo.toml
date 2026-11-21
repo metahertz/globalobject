@@ -1,0 +1,27 @@
+[package]
+name = "globalobject-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "globalobject-node"
+path = "src/main.rs"
+
+[dependencies]
+globalobject-crypto.workspace = true
+globalobject-net.workspace = true
+globalobject-proto.workspace = true
+globalobject-segment.workspace = true
+anyhow.workspace = true
+iroh.workspace = true
+iroh-blobs.workspace = true
+n0-future.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

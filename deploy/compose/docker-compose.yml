@@ -1,0 +1,42 @@
+# Local prototype: MongoDB and the control plane. The API has no TLS: put it behind a proxy.
+# NOT YET RUN: Docker was not available where this was written. See docs/status.md.
+# Nodes need an account, so add them with scripts/grid.sh or by hand after registering.
+#
+# MongoDB runs as a single-node replica set, because the control plane uses transactions. It has
+# no authentication and publishes no port, so only containers on this network can reach it.
+# Enabling auth on a replica set also needs a keyfile; do both before exposing it anywhere.
+services:
+  mongo:
+    image: mongo:8.0
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      # Initiates the replica set on first start, then reports whether it's ready.
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - 'try { rs.status().ok } catch (e) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]}).ok }; quit(db.hello().isWritablePrimary ? 0 : 1)'
+      interval: 2s
+      retries: 30
+  control-plane:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    command: >
+      globalobject-control-plane --listen 0.0.0.0:7400 --key-file /data/control-plane.key
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/globalobject?replicaSet=rs0
+      GLOBALOBJECT_OPERATOR_TOKEN: ${GLOBALOBJECT_OPERATOR_TOKEN:?set GLOBALOBJECT_OPERATOR_TOKEN}
+    volumes:
+      - cpdata:/data
+    ports:
+      - "127.0.0.1:7400:7400"
+    depends_on:
+      mongo:
+        condition: service_healthy
+volumes:
+  mongodata:
+  cpdata:

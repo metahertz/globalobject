@@ -1,0 +1,25 @@
+[package]
+name = "globalobject-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+globalobject-client.workspace = true
+globalobject-control-plane.workspace = true
+globalobject-crypto.workspace = true
+globalobject-net.workspace = true
+globalobject-node.workspace = true
+globalobject-policy.workspace = true
+globalobject-proto.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+iroh.workspace = true
+iroh-blobs.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+mongodb.workspace = true
+futures.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

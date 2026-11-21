@@ -1,0 +1,33 @@
+[package]
+name = "globalobject-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "globalobject"
+path = "src/main.rs"
+
+[dependencies]
+globalobject-crypto.workspace = true
+globalobject-net.workspace = true
+globalobject-policy.workspace = true
+globalobject-proto.workspace = true
+globalobject-segment.workspace = true
+rustic_core.workspace = true
+jiff.workspace = true
+iroh.workspace = true
+iroh-blobs.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+clap.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+bytesize.workspace = true

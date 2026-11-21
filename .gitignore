@@ -1,0 +1,8 @@
+target/
+*.log
+.env
+/.grid/
+
+# Machine-local tooling config.
+.claude/settings.local.json
+.mcp.json

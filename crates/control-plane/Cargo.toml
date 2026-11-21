@@ -1,0 +1,30 @@
+[package]
+name = "globalobject-control-plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "globalobject-control-plane"
+path = "src/main.rs"
+
+[dependencies]
+globalobject-crypto.workspace = true
+globalobject-policy.workspace = true
+globalobject-proto.workspace = true
+globalobject-net.workspace = true
+globalobject-segment.workspace = true
+iroh.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+mongodb.workspace = true
+futures.workspace = true
+hex.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rand.workspace = true

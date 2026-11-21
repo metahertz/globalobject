@@ -1,0 +1,70 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+globalobject-policy = { path = "crates/policy" }
+globalobject-proto = { path = "crates/proto" }
+globalobject-crypto = { path = "crates/crypto" }
+globalobject-segment = { path = "crates/segment" }
+globalobject-net = { path = "crates/net" }
+globalobject-node = { path = "crates/node" }
+globalobject-control-plane = { path = "crates/control-plane" }
+globalobject-client = { path = "crates/client" }
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = { version = "0.8", features = ["small_rng"] }
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# The official driver (Apache-2.0). Default features: rustls TLS, and DNS for mongodb+srv:// (Atlas).
+mongodb = "3.10"
+clap = { version = "4", features = ["derive", "env"] }
+# Existing projects doing the storage, crypto and transport work. See docs/dependencies.md.
+rustic_core = "0.13"
+# rustic_core's own time library, for retention rules.
+jiff = "0.2"
+iroh = "1.4"
+iroh-blobs = "0.104"
+bao-tree = "0.17"
+pasetors = "0.8"
+blake3 = "1"
+ed25519-dalek = "2"
+argon2 = "0.5"
+reed-solomon-erasure = "6"
+hex = "0.4"
+rand_core = { version = "0.6", features = ["getrandom"] }
+futures = "0.3"
+n0-future = "*"
+bytes = "1"
+bytesize = "2.7.0"
+tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+debug = 1
+
+# Line tables for the MongoDB driver push rustc past 2 GiB on small build machines.
+[profile.release.package.mongodb]
+debug = 0
+
+[profile.dev]
+opt-level = 1
+
+# Argon2 and AEAD are far too slow unoptimised for a test grid with many accounts.
+[profile.dev.package."*"]
+opt-level = 2
+
+# The MongoDB driver is large: at opt-level 2 with full debug info, rustc needs more than 2 GiB
+# for it alone. Database round trips dominate its cost, so optimisation buys the tests nothing.
+[profile.dev.package.mongodb]
+opt-level = 0
+debug = 0

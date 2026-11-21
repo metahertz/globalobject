@@ -1,0 +1,17 @@
+[package]
+name = "globalobject-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+globalobject-proto.workspace = true
+iroh.workspace = true
+iroh-blobs.workspace = true
+bao-tree.workspace = true
+n0-future.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+bytes.workspace = true

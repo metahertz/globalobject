@@ -1,0 +1,9 @@
+[package]
+name = "globalobject-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+globalobject-policy.workspace = true
+rand.workspace = true
