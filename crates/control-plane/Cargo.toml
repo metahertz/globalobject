@@ -28,3 +28,4 @@ clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rand.workspace = true
+prometheus-client.workspace = true

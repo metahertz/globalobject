@@ -18,6 +18,8 @@ jobs:
           done
           until docker exec mongo mongosh --quiet --eval 'quit(db.hello().isWritablePrimary ? 0 : 1)'; do sleep 1; done
       - run: cargo fmt --all --check
+      - name: Shell scripts
+        run: shellcheck install.sh deploy/install-server.sh scripts/test.sh scripts/grid.sh
       - run: python3 scripts/check-licences.py
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: scripts/test.sh

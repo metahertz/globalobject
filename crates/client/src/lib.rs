@@ -2,6 +2,12 @@
 //! using restic's repository format, which was designed for untrusted storage. This crate
 //! supplies a backend that stores those repository files on the grid.
 
+pub mod agent;
+pub mod config;
+pub mod dashboard;
+pub mod service;
+pub mod setup;
+
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -75,7 +81,7 @@ struct Inner {
 pub struct Client(Arc<Inner>);
 
 /// Which snapshots `forget` keeps, as in restic and rustic. At least one must be set.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, serde::Deserialize)]
 pub struct Retention {
     pub last: Option<i32>,
     pub daily: Option<i32>,
@@ -83,19 +89,30 @@ pub struct Retention {
     pub monthly: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct PruneSummary {
     pub packs_removed: u64,
     pub bytes_removed: u64,
     pub packs_repacked: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct BackupStats {
     pub snapshot: String,
     pub files: u64,
     pub bytes_in: u64,
     pub bytes_added: u64,
+}
+
+/// A snapshot, for listing to people.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct SnapshotInfo {
+    pub id: String,
+    /// RFC 3339.
+    pub time: String,
+    pub paths: Vec<String>,
+    pub files: u64,
+    pub bytes: u64,
 }
 
 impl Client {
@@ -115,12 +132,30 @@ impl Client {
 
     /// Open an existing account from local state.
     pub async fn open(cp: &str, phrase: &str, passphrase: &str, state_dir: &Path, net: NetMode) -> Result<Client> {
-        let text = std::fs::read_to_string(state_dir.join("account")).context("no account here: run `globalobject register` first")?;
+        let text = std::fs::read_to_string(state_dir.join("account")).context("no account here: run `globalobject setup` first")?;
         let mut it = text.split_whitespace();
         let id = it.next().and_then(|x| x.parse().ok()).ok_or_else(|| anyhow!("bad account file"))?;
         let pool = it.next().and_then(|x| x.parse().ok()).ok_or_else(|| anyhow!("bad account file"))?;
         let identity = Identity::from_seed(&seed_from_phrase(phrase, passphrase));
         Self::build(cp, id, pool, identity, phrase, passphrase, state_dir, net).await
+    }
+
+    /// Open the account a phrase belongs to, on a machine that has never seen it: the
+    /// control plane is asked which account the phrase's key belongs to, by a request signed
+    /// with that key. The account number is then remembered in `state_dir`.
+    pub async fn recover(cp: &str, phrase: &str, passphrase: &str, state_dir: &Path, net: NetMode) -> Result<Client> {
+        let identity = Identity::from_seed(&seed_from_phrase(phrase, passphrase));
+        let id = format!("k{}", identity.public_hex());
+        let path = "/v1/accounts/whoami";
+        let token = identity.token(T_REQ, &RequestClaims::new(&id, "GET", path, b""));
+        let resp = http_client()?.get(format!("{cp}{path}")).header(H_ID, &id).header(H_AUTH, token).send().await?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            bail!("no account uses this recovery phrase on {cp}: check the words, and the passphrase if you set one");
+        }
+        let c: AccountCreated = decode_or_error(path, resp).await?;
+        std::fs::create_dir_all(state_dir)?;
+        std::fs::write(state_dir.join("account"), format!("{} {}", c.account, c.pool))?;
+        Self::build(cp, c.account, c.pool, identity, phrase, passphrase, state_dir, net).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -198,8 +233,13 @@ impl Client {
     }
 
     pub async fn invite(&self) -> Result<String> {
+        Ok(self.invite_link().await?.0)
+    }
+
+    /// A new invite code, and a join link for it when the control plane knows its address.
+    pub async fn invite_link(&self) -> Result<(String, Option<String>)> {
         let c: InviteCreated = self.post(&format!("/v1/pools/{}/invites", self.0.pool), &()).await?;
-        Ok(c.invite)
+        Ok((c.invite, c.join_url))
     }
 
     /// Set a node's slice size. Shrinking drains pieces elsewhere first.
@@ -434,8 +474,16 @@ impl Client {
 
     /// Back up a path as a new snapshot, creating the repository if needed.
     pub async fn backup(&self, path: &Path) -> Result<BackupStats> {
+        self.backup_paths(&[path.to_path_buf()]).await
+    }
+
+    /// Back up several paths together as one snapshot.
+    pub async fn backup_paths(&self, paths: &[PathBuf]) -> Result<BackupStats> {
+        if paths.is_empty() {
+            bail!("nothing to back up: add a folder with `globalobject paths add <folder>`");
+        }
         self.check_rollback().await?;
-        let (me, backends, path) = (self.clone(), self.backend(), path.to_path_buf());
+        let (me, backends, paths) = (self.clone(), self.backend(), paths.to_vec());
         let creds = self.credentials();
         let stats = tokio::task::spawn_blocking(move || -> Result<BackupStats> {
             let opts = Self::repo_options();
@@ -447,7 +495,7 @@ impl Client {
                 Repository::new(&opts, &backends)?.init(&creds, &KeyOptions::default(), &config)?;
             }
             let repo = Repository::new(&opts, &backends)?.open(&creds)?.to_indexed_ids()?;
-            let source = PathList::from_string(path.to_str().ok_or_else(|| anyhow!("path isn't UTF-8"))?)?.sanitize()?;
+            let source = PathList::from_iter(paths).sanitize()?;
             let snap = repo.backup(&BackupOptions::default(), &source, SnapshotOptions::default().to_snapshot()?)?;
             let s = snap.summary.clone().unwrap_or_default();
             drop(me);
@@ -474,6 +522,37 @@ impl Client {
         let ids = self.list_snapshots().await?;
         self.remember_snapshots(&ids)?;
         Ok(ids)
+    }
+
+    /// Snapshots with their time, paths and size, oldest first.
+    pub async fn snapshot_infos(&self) -> Result<Vec<SnapshotInfo>> {
+        self.check_rollback().await?;
+        let (backends, creds) = (self.backend(), self.credentials());
+        let infos = tokio::task::spawn_blocking(move || -> Result<Vec<SnapshotInfo>> {
+            if backends.repository().list(FileType::Config).map_err(|e| anyhow!("{e}"))?.is_empty() {
+                return Ok(vec![]);
+            }
+            let repo = Repository::new(&Self::repo_options(), &backends)?.open(&creds)?;
+            let mut snaps = repo.get_all_snapshots()?;
+            snaps.sort_by(|a, b| a.time.cmp(&b.time));
+            Ok(snaps
+                .iter()
+                .map(|s| {
+                    let sum = s.summary.clone().unwrap_or_default();
+                    SnapshotInfo {
+                        id: s.id.to_hex().as_str().to_string(),
+                        time: s.time.timestamp().to_string(),
+                        paths: s.paths.iter().map(|p| p.to_string()).collect(),
+                        files: sum.files_new + sum.files_changed + sum.files_unmodified,
+                        bytes: sum.total_bytes_processed,
+                    }
+                })
+                .collect())
+        })
+        .await?
+        .map_err(|e| self.take_error(e))?;
+        self.remember_snapshots(&infos.iter().map(|i| i.id.clone()).collect::<Vec<_>>())?;
+        Ok(infos)
     }
 
     async fn list_snapshots(&self) -> Result<Vec<String>> {

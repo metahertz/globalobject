@@ -46,6 +46,9 @@ pub fn fast_config() -> Config {
         repair_timeout_secs: 30.0,
         pending_timeout_secs: 600.0,
         net: NetMode::Local,
+        public_url: None,
+        trusted_proxies: vec![],
+        metrics_every: Duration::from_millis(500),
     }
 }
 

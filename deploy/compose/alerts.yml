@@ -1,0 +1,51 @@
+# What each alert means and what to do: docs/operations.md, "Alerts".
+groups:
+  - name: globalobject
+    rules:
+      - alert: ControlPlaneDown
+        expr: up{job="control-plane"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "The control plane isn't answering. No new backups or restores until it's back; stored data is safe."
+
+      - alert: DatabaseSummaryFailing
+        expr: globalobject_summary_up == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "The control plane can't query MongoDB. Check the mongo container and /readyz."
+
+      - alert: SegmentsUnreadable
+        expr: globalobject_segments_unreadable > 0
+        for: 15m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $value }} segments have fewer than k healthy pieces and can't be read until hosts return."
+
+      - alert: RepairBacklog
+        expr: globalobject_segments_below_repair > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} segments have been below their repair threshold for 30 minutes."
+
+      - alert: RepairNotKeepingUp
+        expr: delta(globalobject_segments_below_repair[1h]) > 0 and globalobject_segments_below_repair > 100
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "The repair backlog is still growing after an hour."
+
+      - alert: NodesDropped
+        expr: globalobject_nodes_online < 0.8 * max_over_time(globalobject_nodes_online[1h])
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "More than 20% of nodes went offline in the last hour: possibly a network outage."
+
+      - alert: AuditFailures
+        expr: increase(globalobject_audits_total{result="fail"}[1h]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Hosts failed {{ $value }} audits in the last hour. See `admin nodes` for audit counts."

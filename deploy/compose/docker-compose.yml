@@ -1,14 +1,30 @@
-# Local prototype: MongoDB and the control plane. The API has no TLS: put it behind a proxy.
-# NOT YET RUN: Docker was not available where this was written. See docs/status.md.
-# Nodes need an account, so add them with scripts/grid.sh or by hand after registering.
+# A GlobalObject control plane on one host: MongoDB, the control plane, Caddy for HTTPS,
+# nightly database backups, and optionally Prometheus. `deploy/install-server.sh` writes
+# `.env` beside this file and runs it; see docs/operations.md.
 #
-# MongoDB runs as a single-node replica set, because the control plane uses transactions. It has
-# no authentication and publishes no port, so only containers on this network can reach it.
-# Enabling auth on a replica set also needs a keyfile; do both before exposing it anywhere.
+# Profiles (set COMPOSE_PROFILES in .env):
+#   tls         Caddy on ports 80 and 443, with a certificate for GLOBALOBJECT_DOMAIN.
+#   monitoring  Prometheus with alert rules, on 127.0.0.1:9090.
+#
+# MongoDB runs as a single-node replica set, because the control plane uses transactions. It
+# has no authentication and publishes no port, so only containers on this network reach it.
+name: globalobject
+
+x-restart: &restart
+  restart: unless-stopped
+
+networks:
+  default:
+    ipam:
+      config:
+        # Fixed, so the control plane can trust Caddy's X-Forwarded-For from this range only.
+        - subnet: 172.30.57.0/24
+
 services:
   mongo:
+    <<: *restart
     image: mongo:8.0
-    command: ["--replSet", "rs0", "--bind_ip_all"]
+    command: ["--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     volumes:
       - mongodata:/data/db
     healthcheck:
@@ -19,24 +35,90 @@ services:
         - --quiet
         - --eval
         - 'try { rs.status().ok } catch (e) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]}).ok }; quit(db.hello().isWritablePrimary ? 0 : 1)'
-      interval: 2s
+      interval: 5s
       retries: 30
+
   control-plane:
+    <<: *restart
+    image: ${GLOBALOBJECT_IMAGE:-globalobject-control-plane:local}
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
-    command: >
-      globalobject-control-plane --listen 0.0.0.0:7400 --key-file /data/control-plane.key
     environment:
       MONGODB_URI: mongodb://mongo:27017/globalobject?replicaSet=rs0
-      GLOBALOBJECT_OPERATOR_TOKEN: ${GLOBALOBJECT_OPERATOR_TOKEN:?set GLOBALOBJECT_OPERATOR_TOKEN}
+      GLOBALOBJECT_OPERATOR_TOKEN: ${GLOBALOBJECT_OPERATOR_TOKEN:?set GLOBALOBJECT_OPERATOR_TOKEN in .env}
+      GLOBALOBJECT_PUBLIC_URL: ${GLOBALOBJECT_PUBLIC_URL:-}
+      GLOBALOBJECT_TRUSTED_PROXY: 172.30.57.0/24
+      RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - cpdata:/data
     ports:
-      - "127.0.0.1:7400:7400"
+      # Loopback by default: the admin CLI and health checks use it, and Caddy fronts users.
+      # install-server.sh --no-tls sets CONTROL_PLANE_BIND=0.0.0.0 for LAN or test setups.
+      - "${CONTROL_PLANE_BIND:-127.0.0.1}:7400:7400"
     depends_on:
       mongo:
         condition: service_healthy
+
+  caddy:
+    <<: *restart
+    image: caddy:2
+    profiles: ["tls"]
+    environment:
+      GLOBALOBJECT_DOMAIN: ${GLOBALOBJECT_DOMAIN:?set GLOBALOBJECT_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - control-plane
+
+  # Losing this database loses every pool's metadata, so keep nightly dumps. Copy the
+  # `mongobackup` volume off this host too: see docs/operations.md.
+  mongo-backup:
+    <<: *restart
+    image: mongo:8.0
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          f=/backup/globalobject-$$(date -u +%Y%m%dT%H%M%SZ).archive.gz
+          if mongodump --quiet --uri 'mongodb://mongo:27017/globalobject?replicaSet=rs0' --archive="$$f" --gzip; then
+            echo "backup written: $$f"
+          else
+            echo "backup FAILED"; rm -f "$$f"
+          fi
+          ls -1t /backup/globalobject-*.archive.gz 2>/dev/null | tail -n +$${KEEP:-8} | xargs -r rm -f
+          sleep $${INTERVAL:-86400}
+        done
+    environment:
+      KEEP: ${BACKUPS_KEPT:-7}
+    volumes:
+      - mongobackup:/backup
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  prometheus:
+    <<: *restart
+    image: prom/prometheus:v3.5.0
+    profiles: ["monitoring"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=30d"]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+
 volumes:
   mongodata:
   cpdata:
+  caddydata:
+  caddyconfig:
+  mongobackup:
+  promdata:

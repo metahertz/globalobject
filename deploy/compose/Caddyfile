@@ -1,0 +1,10 @@
+# HTTPS in front of the control plane. Caddy gets and renews the certificate itself; the
+# domain's DNS must point here and ports 80 and 443 must be reachable.
+{$GLOBALOBJECT_DOMAIN} {
+	encode zstd gzip
+
+	# Metrics are for Prometheus on the internal network, not the internet.
+	respond /metrics 404
+
+	reverse_proxy control-plane:7400
+}

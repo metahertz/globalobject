@@ -4,7 +4,7 @@ use crate::db::{self, bytes_by, find_all, is_duplicate_key, to_bson, transaction
 use crate::*;
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
@@ -54,7 +54,7 @@ impl IntoResponse for ApiErr {
         }
     }
 }
-fn fail<T>(c: StatusCode, m: impl Into<String>) -> Result<T, ApiErr> {
+pub(crate) fn fail<T>(c: StatusCode, m: impl Into<String>) -> Result<T, ApiErr> {
     Err(ApiErr::Status(c, m.into()))
 }
 
@@ -74,10 +74,19 @@ async fn auth(s: &Shared, method: &str, path: &str, h: &HeaderMap, body: &[u8]) 
     let (Some(id), Some(token)) = (hdr(H_ID), hdr(H_AUTH)) else {
         return fail(StatusCode::UNAUTHORIZED, "missing credentials");
     };
-    let num: i64 = id.get(1..).and_then(|x| x.parse().ok()).ok_or(ApiErr::Status(StatusCode::UNAUTHORIZED, "bad id".into()))?;
-    let (who, key): (Who, Option<String>) = if id.starts_with('a') {
+    // `k<public key>`: an account that knows its key but not its number, such as the owner
+    // restoring on a new machine with only the recovery phrase.
+    let id_num = match id.strip_prefix('k') {
+        Some(key) => match s.db.accounts.find_one(doc! {"public_key": key}).await? {
+            Some(a) => format!("a{}", a.id),
+            None => return fail(StatusCode::UNAUTHORIZED, "unknown identity"),
+        },
+        None => id.clone(),
+    };
+    let num: i64 = id_num.get(1..).and_then(|x| x.parse().ok()).ok_or(ApiErr::Status(StatusCode::UNAUTHORIZED, "bad id".into()))?;
+    let (who, key): (Who, Option<String>) = if id_num.starts_with('a') {
         (Who::Account(num), s.db.accounts.find_one(doc! {"_id": num}).await?.map(|a| a.public_key))
-    } else if id.starts_with('n') {
+    } else if id_num.starts_with('n') {
         (Who::Node(num), s.db.nodes.find_one(doc! {"_id": num}).await?.map(|n| n.public_key))
     } else {
         return fail(StatusCode::UNAUTHORIZED, "bad id");
@@ -108,9 +117,7 @@ fn parse<T: serde::de::DeserializeOwned>(b: &[u8]) -> Result<T, ApiErr> {
 // ---------------------------------------------------------------- pools
 
 async fn create_pool(State(s): S, h: HeaderMap, Json(req): Json<CreatePool>) -> Result<Json<PoolCreated>, ApiErr> {
-    if h.get("x-globalobject-operator").and_then(|v| v.to_str().ok()) != Some(s.cfg.operator_token.as_str()) || s.cfg.operator_token.is_empty() {
-        return fail(StatusCode::FORBIDDEN, "operator token required");
-    }
+    ops::require_operator(&s, &h)?;
     validate_pool(&req.policy, &req.quota)?;
     let id = s.db.next_id("pools").await?;
     s.db.pools
@@ -126,7 +133,7 @@ async fn create_pool(State(s): S, h: HeaderMap, Json(req): Json<CreatePool>) -> 
         .await?;
     let invite = globalobject_crypto::random_hex(16);
     s.db.invites.insert_one(db::InviteDoc { token: invite.clone(), pool: id, inviter: None, used_by: None }).await?;
-    Ok(Json(PoolCreated { pool: id, admin_invite: invite }))
+    Ok(Json(PoolCreated { pool: id, join_url: ops::join_url(&s, &h, &invite), admin_invite: invite }))
 }
 
 fn validate_pool(p: &Policy, q: &QuotaParams) -> Result<(), ApiErr> {
@@ -153,22 +160,33 @@ async fn update_pool(State(s): S, Path(pool): Path<i64>, h: HeaderMap, body: Byt
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
+/// Members invite into their own pool (only the admin, for a private one). The operator can
+/// invite into any pool, with no inviter recorded.
 async fn create_invite(State(s): S, Path(pool): Path<i64>, h: HeaderMap, body: Bytes) -> Result<Json<InviteCreated>, ApiErr> {
-    let (id, my_pool, _) = auth_account(&s, "POST", &format!("/v1/pools/{pool}/invites"), &h, &body).await?;
-    let p = pool_doc(&s, pool).await?;
-    if my_pool != pool || (p.private && p.admin != Some(id)) {
-        return fail(StatusCode::FORBIDDEN, "not allowed to invite to this pool");
-    }
+    let inviter = if ops::is_operator(&s, &h) {
+        pool_doc(&s, pool).await?;
+        None
+    } else {
+        let (id, my_pool, _) = auth_account(&s, "POST", &format!("/v1/pools/{pool}/invites"), &h, &body).await?;
+        let p = pool_doc(&s, pool).await?;
+        if my_pool != pool || (p.private && p.admin != Some(id)) {
+            return fail(StatusCode::FORBIDDEN, "not allowed to invite to this pool");
+        }
+        Some(id)
+    };
     let invite = globalobject_crypto::random_hex(16);
-    s.db.invites.insert_one(db::InviteDoc { token: invite.clone(), pool, inviter: Some(id), used_by: None }).await?;
-    Ok(Json(InviteCreated { invite }))
+    s.db.invites.insert_one(db::InviteDoc { token: invite.clone(), pool, inviter, used_by: None }).await?;
+    Ok(Json(InviteCreated { join_url: ops::join_url(&s, &h, &invite), invite }))
 }
 
+/// A private pool's admin, or the operator, can remove a member.
 async fn remove_member(State(s): S, Path((pool, member)): Path<(i64, i64)>, h: HeaderMap, body: Bytes) -> Result<Json<serde_json::Value>, ApiErr> {
-    let (id, my_pool, _) = auth_account(&s, "POST", &format!("/v1/pools/{pool}/members/{member}/remove"), &h, &body).await?;
-    let p = pool_doc(&s, pool).await?;
-    if my_pool != pool || p.admin != Some(id) {
-        return fail(StatusCode::FORBIDDEN, "admin only");
+    if !ops::is_operator(&s, &h) {
+        let (id, my_pool, _) = auth_account(&s, "POST", &format!("/v1/pools/{pool}/members/{member}/remove"), &h, &body).await?;
+        let p = pool_doc(&s, pool).await?;
+        if my_pool != pool || p.admin != Some(id) {
+            return fail(StatusCode::FORBIDDEN, "admin only");
+        }
     }
     let res = s.db.accounts.update_one(doc! {"_id": member, "pool": pool}, doc! {"$set": {"state": "read_only", "read_only_since": fnow()}}).await?;
     if res.matched_count == 0 {
@@ -215,7 +233,7 @@ async fn register_account(State(s): S, Json(req): Json<RegisterAccount>) -> Resu
     Ok(Json(AccountCreated { account: id, pool, grant_key: s.identity.public_hex() }))
 }
 
-async fn register_node(State(s): S, h: HeaderMap, body: Bytes) -> Result<Json<NodeCreated>, ApiErr> {
+async fn register_node(State(s): S, peer: Option<ConnectInfo<std::net::SocketAddr>>, h: HeaderMap, body: Bytes) -> Result<Json<NodeCreated>, ApiErr> {
     let (id, pool, state) = auth_account(&s, "POST", "/v1/nodes", &h, &body).await?;
     if state == "purged" {
         return fail(StatusCode::FORBIDDEN, "account removed");
@@ -243,8 +261,10 @@ async fn register_node(State(s): S, h: HeaderMap, body: Bytes) -> Result<Json<No
         endpoint: req.endpoint.clone(),
         probe_hash: req.probe_hash.clone(),
         probe_bytes: req.probe_bytes as i64,
-        site: req.site.clone(),
-        asn: req.asn.clone(),
+        // Left empty, the site comes from the address the node connects from. The control
+        // plane deciding it, rather than the user, is what makes failure domains meaningful.
+        site: if req.site.is_empty() { ops::derived_site(&s, peer, &h) } else { req.site.clone() },
+        asn: if req.asn.is_empty() { "unknown".into() } else { req.asn.clone() },
         pledged: req.pledged as i64,
         target_pledged: None,
         state: "active".into(),
@@ -282,6 +302,12 @@ async fn update_node(State(s): S, Path(node): Path<i64>, h: HeaderMap, body: Byt
         s.db.nodes.update_one(doc! {"_id": node}, doc! {"$set": {"target_pledged": req.pledged as i64}}).await?;
     }
     Ok(Json(serde_json::json!({"ok": true, "held": held})))
+}
+
+/// Which account a key belongs to. Signed with the key itself, using a `k<public key>` id.
+async fn whoami(State(s): S, h: HeaderMap) -> Result<Json<AccountCreated>, ApiErr> {
+    let (id, pool, _) = auth_account(&s, "GET", "/v1/accounts/whoami", &h, b"").await?;
+    Ok(Json(AccountCreated { account: id, pool, grant_key: s.identity.public_hex() }))
 }
 
 async fn account_status(State(s): S, h: HeaderMap) -> Result<Json<AccountStatus>, ApiErr> {
@@ -726,12 +752,13 @@ async fn probe_result(State(s): S, h: HeaderMap, body: Bytes) -> Result<Json<ser
 
 pub fn router(s: Arc<Shared>) -> Router {
     Router::new()
-        .route("/v1/pools", post(create_pool))
+        .route("/v1/pools", post(create_pool).get(ops::list_pools))
         .route("/v1/pools/:id", patch(update_pool))
         .route("/v1/pools/:id/invites", post(create_invite))
         .route("/v1/pools/:id/members/:member/remove", post(remove_member))
         .route("/v1/accounts", post(register_account))
         .route("/v1/accounts/me", get(account_status))
+        .route("/v1/accounts/whoami", get(whoami))
         .route("/v1/nodes", post(register_node))
         .route("/v1/nodes/:id", patch(update_node))
         .route("/v1/nodes/:id/heartbeat", post(heartbeat))
@@ -745,5 +772,7 @@ pub fn router(s: Arc<Shared>) -> Router {
         .route("/v1/objects/:tpe/:id/delete", post(delete_object))
         .route("/v1/tasks/repair-done", post(repair_done))
         .route("/v1/tasks/probe-result", post(probe_result))
+        .merge(ops::routes())
+        .route_layer(axum::middleware::from_fn_with_state(s.clone(), ops::track))
         .with_state(s)
 }

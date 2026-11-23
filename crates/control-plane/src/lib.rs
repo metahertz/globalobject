@@ -1,8 +1,10 @@
 //! Control plane: identity, pools, placement, grants, ledger, audit and repair.
 //! It holds no decryption keys and never sees file names or contents.
 
+pub mod admin;
 mod api;
 pub mod db;
+pub mod ops;
 mod reconcile;
 
 use anyhow::Result;
@@ -48,6 +50,13 @@ pub struct Config {
     pub repair_timeout_secs: f64,
     pub pending_timeout_secs: f64,
     pub net: NetMode,
+    /// The URL users reach this control plane at, for join links. Without it, links use the
+    /// request's Host header over plain HTTP.
+    pub public_url: Option<String>,
+    /// Proxies whose `X-Forwarded-For` is believed, such as Caddy in front of this service.
+    pub trusted_proxies: Vec<ops::Cidr>,
+    /// How often the summary behind `/metrics` is recomputed.
+    pub metrics_every: Duration,
 }
 
 impl Config {
@@ -74,6 +83,9 @@ impl Config {
             repair_timeout_secs: 3600.0,
             pending_timeout_secs: 3600.0,
             net: NetMode::Internet,
+            public_url: None,
+            trusted_proxies: vec![],
+            metrics_every: Duration::from_secs(30),
         }
     }
 }
@@ -84,6 +96,7 @@ pub struct Shared {
     pub identity: Identity,
     /// For auditing hosts. Holds no data, and accepts no connections.
     pub endpoint: iroh::Endpoint,
+    pub metrics: ops::Metrics,
 }
 
 pub fn fnow() -> f64 {
@@ -117,8 +130,15 @@ impl Handle {
 
 pub async fn serve(cfg: Config, db: Db, listener: TcpListener) -> Result<Handle> {
     let addr = listener.local_addr()?;
-    let shared = Arc::new(Shared { identity: Identity::from_seed(&cfg.signing_seed), endpoint: globalobject_net::bind(cfg.net, vec![]).await?, cfg, db });
+    let shared = Arc::new(Shared {
+        identity: Identity::from_seed(&cfg.signing_seed),
+        endpoint: globalobject_net::bind(cfg.net, vec![]).await?,
+        cfg,
+        db,
+        metrics: ops::Metrics::default(),
+    });
     let mut tasks = reconcile::spawn(shared.clone());
+    tasks.insert(0, ops::spawn(shared.clone()));
     let app = api::router(shared.clone());
     tasks.push(tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
@@ -168,6 +188,7 @@ pub(crate) fn sign_grant_range(
     rate_bps: u64,
     range: Option<(u64, u64)>,
 ) -> Issued {
+    s.metrics.grants_issued.inc();
     let grant = Grant {
         nonce: globalobject_crypto::random_hex(16),
         account,

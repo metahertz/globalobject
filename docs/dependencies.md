@@ -14,6 +14,15 @@ to what's specific to reciprocal storage.
 | Grants, receipts, request auth | [`pasetors`](https://github.com/brycx/pasetors), PASETO v4.public | MIT | Pre-1.0, implementing a published spec |
 | Deriving the signing key from a phrase | `argon2` (Argon2id) | MIT or Apache-2.0 | Established |
 | Control-plane state | MongoDB 8.0 server, as a replica set, through the official [`mongodb`](https://crates.io/crates/mongodb) Rust driver | Driver Apache-2.0, `bson` MIT. Server SSPL: see Licences | Established |
+| Metrics | [`prometheus-client`](https://crates.io/crates/prometheus-client), the Prometheus project's own Rust client | Apache-2.0 | Established |
+| Settings files | `toml` | MIT or Apache-2.0 | Established |
+| Config and data directories per platform | `directories` | MIT or Apache-2.0 | Established |
+| Setup questions | `dialoguer` | MIT | Established |
+| New recovery phrases (BIP39 word list) | `bip39` | CC0-1.0 | Established |
+| Free disk space, for the suggested slice size | `fs4` | MIT or Apache-2.0 | Established |
+| Opening the dashboard in a browser | `open` | MIT | Established |
+| HTTPS, operator deployments | Caddy 2, run unmodified as a container | Apache-2.0 | Established |
+| Monitoring, operator deployments (optional) | Prometheus, run unmodified as a container | Apache-2.0 | Established |
 
 ## Still custom
 
@@ -67,6 +76,7 @@ the wire protocol is also served by FerretDB (Apache-2.0), untested here.
 | Project | Why |
 |---|---|
 | Storj, Garage | AGPL. Excluded by the licence rule |
+| Grafana, for operator dashboards | AGPL. The control plane serves its own `/admin` page instead; operators who already run Grafana can point it at `/metrics` |
 | Ceph, Rook | Needs about 10 ms between data sites, and trusted nodes |
 | Tahoe-LAFS | GPL or TGPPL, with no recent upstream activity found |
 | etcd, Patroni | Not suitable for users' nodes. Could be considered for the operator's own database later |

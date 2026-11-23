@@ -1235,3 +1235,204 @@ async fn t_local_parity_repairs_from_the_group() {
     }
     assert!(get(c, &snap, &src, "f").await.unwrap() == body, "not readable after r + 1 losses");
 }
+
+// U ------------------------------------------------------------------ ease of use
+
+async fn json(r: reqwest::RequestBuilder) -> (u16, serde_json::Value) {
+    let r = r.send().await.unwrap();
+    let code = r.status().as_u16();
+    (code, r.json().await.unwrap_or(serde_json::Value::Null))
+}
+
+/// The whole user path: a join link, `setup`, the agent's slice, a backup started from the
+/// dashboard, a restore, and recovering the account on another machine from the phrase alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn u01_join_link_setup_agent_backup_restore() {
+    use globalobject_client::{agent, config::Paths, setup};
+    let g = Grid::start(fast_config()).await.unwrap();
+    // Three members already, so a newcomer's three copies have somewhere to go.
+    let (_, m) = g.pool_with_members(3, p3(), generous_quota(), false).await.unwrap();
+
+    // The invite comes with a join link, and the link's page shows the one command to run.
+    let (code, link) = m[0].client.invite_link().await.unwrap();
+    let link = link.expect("join link");
+    assert_eq!(link, format!("{}/join/{code}", g.url));
+    let page = plain().get(&link).send().await.unwrap().text().await.unwrap();
+    assert!(page.contains(&format!("curl -fsSL {}/install.sh | sh -s -- --join {link}", g.url)), "{page}");
+    let script = plain().get(format!("{}/install.sh", g.url)).send().await.unwrap().text().await.unwrap();
+    assert!(script.starts_with("#!/bin/sh"));
+    assert_eq!(plain().get(format!("{}/join/00ff", g.url)).send().await.unwrap().status(), 404);
+
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths { config_dir: home.path().join("config"), data_dir: home.path().join("data") };
+    let docs = home.path().join("Documents");
+    std::fs::create_dir_all(&docs).unwrap();
+    let body = noise(2 * MB as usize, 31);
+    std::fs::write(docs.join("report.bin"), &body).unwrap();
+    setup::run_with(
+        &paths,
+        setup::SetupArgs {
+            join: Some(link.clone()),
+            slice: Some("8GB".into()),
+            paths: vec![docs.clone()],
+            every_hours: Some(24),
+            dashboard_port: Some(0),
+            yes: true,
+            no_service: true,
+            local: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (cfg, creds) = paths.load().unwrap();
+    assert_eq!(cfg.slice.size, 8_000_000_000);
+    assert_eq!(creds.phrase.split_whitespace().count(), 12, "a new 12-word phrase");
+    // The invite is spent.
+    assert_eq!(plain().get(&link).send().await.unwrap().status(), 410);
+
+    let agent_task = tokio::spawn(agent::run(paths.clone()));
+    let p2 = paths.clone();
+    assert!(
+        eventually(Duration::from_secs(20), || {
+            let p = p2.clone();
+            async move { agent::read_status(&p).is_some_and(|s| s.node.is_some()) }
+        })
+        .await
+    );
+    let st = agent::read_status(&paths).unwrap();
+    let dash = st.dashboard.clone();
+    // The control plane chose the node's site from its address, not the user.
+    assert_eq!(q::node(g.db(), st.node.unwrap()).await.site, "127.0.0.0/24");
+
+    // The dashboard: token, Host and CSRF checks.
+    let c = plain();
+    let bearer = format!("Bearer {}", creds.dashboard_token);
+    assert_eq!(c.get(format!("{dash}/api/status")).send().await.unwrap().status(), 401);
+    assert_eq!(c.get(format!("{dash}/api/status")).header("authorization", "Bearer nope").send().await.unwrap().status(), 401);
+    assert_eq!(c.get(format!("{dash}/api/status")).header("authorization", &bearer).header("host", "evil.example").send().await.unwrap().status(), 403);
+    assert_eq!(c.get(format!("{dash}/login?token=nope")).send().await.unwrap().status(), 401);
+    let login = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let r = login.get(format!("{dash}/login?token={}", creds.dashboard_token)).send().await.unwrap();
+    assert_eq!(r.status(), 303);
+    assert!(r.headers()["set-cookie"].to_str().unwrap().contains("HttpOnly; SameSite=Strict"));
+    let (code, s) = json(c.get(format!("{dash}/api/status")).header("authorization", &bearer)).await;
+    assert_eq!(code, 200, "{s}");
+    assert_eq!(s["account"]["state"], "active");
+    assert_eq!(c.post(format!("{dash}/api/backup")).header("authorization", &bearer).send().await.unwrap().status(), 403, "POST without x-globalobject");
+
+    // Back up from the dashboard, and wait for it to finish.
+    let post = |path: &str, body: serde_json::Value| c.post(format!("{dash}{path}")).header("authorization", &bearer).header("x-globalobject", "1").json(&body);
+    assert_eq!(json(post("/api/backup", serde_json::json!({}))).await.0, 202);
+    let ok = eventually(Duration::from_secs(60), || {
+        let r = c.get(format!("{dash}/api/status")).header("authorization", &bearer);
+        async move { json(r).await.1["agent"]["last_backup"]["ok"] == true }
+    })
+    .await;
+    assert!(ok, "backup didn't finish: {:?}", agent::read_status(&paths).and_then(|s| s.last_backup));
+    let (_, snaps) = json(c.get(format!("{dash}/api/snapshots")).header("authorization", &bearer)).await;
+    let snap = snaps[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(snaps[0]["files"], 1);
+
+    // Restore from the dashboard. Into a non-empty folder is refused.
+    assert_eq!(json(post("/api/restore", serde_json::json!({"snapshot": snap, "dest": docs}))).await.0, 400);
+    let dest = home.path().join("restored");
+    assert_eq!(json(post("/api/restore", serde_json::json!({"snapshot": snap, "dest": dest}))).await.0, 202);
+    let restored = dest.join(docs.strip_prefix("/").unwrap()).join("report.bin");
+    let r2 = restored.clone();
+    assert!(
+        eventually(Duration::from_secs(60), || {
+            let r = r2.clone();
+            async move { std::fs::read(&r).is_ok_and(|b| b.len() == 2 * MB as usize) }
+        })
+        .await
+    );
+    assert!(std::fs::read(&restored).unwrap() == body);
+
+    // Settings from the dashboard reach config.toml.
+    assert_eq!(json(post("/api/settings", serde_json::json!({"every_hours": 6, "slice": "9GB"}))).await.0, 200);
+    let (cfg2, _) = paths.load().unwrap();
+    assert_eq!((cfg2.backup.every_hours, cfg2.slice.size), (6, 9_000_000_000));
+    assert_eq!(json(post("/api/settings", serde_json::json!({"paths": ["relative/path"]}))).await.0, 400);
+    let metrics = c.get(format!("{dash}/metrics")).header("authorization", &bearer).send().await.unwrap().text().await.unwrap();
+    assert!(metrics.contains("globalobject_agent_last_backup_success 1"), "{metrics}");
+
+    // A new machine, with only the phrase.
+    let other = tempfile::tempdir().unwrap();
+    let back = globalobject_client::Client::recover(&g.url, &creds.phrase, "", other.path(), NetMode::Local).await.unwrap();
+    assert_eq!(back.id(), cfg_account(&paths));
+    assert!(back.snapshots().await.unwrap().contains(&snap));
+    let wrong = globalobject_client::Client::recover(&g.url, "not the phrase", "", tempfile::tempdir().unwrap().path(), NetMode::Local).await;
+    assert!(wrong.is_err());
+    agent_task.abort();
+}
+
+fn cfg_account(paths: &globalobject_client::config::Paths) -> i64 {
+    std::fs::read_to_string(paths.state_dir().join("account")).unwrap().split_whitespace().next().unwrap().parse().unwrap()
+}
+
+/// What an operator sees: health, readiness, the admin API, metrics, and member removal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn u02_operator_health_admin_api_and_metrics() {
+    let g = Grid::start(fast_config()).await.unwrap();
+    let (p, m) = g.pool_with_members(4, p3(), generous_quota(), true).await.unwrap();
+    let c = plain();
+    let op = |r: reqwest::RequestBuilder| r.header("x-globalobject-operator", OPERATOR);
+    assert_eq!(c.get(format!("{}/healthz", g.url)).send().await.unwrap().status(), 200);
+    assert_eq!(c.get(format!("{}/readyz", g.url)).send().await.unwrap().status(), 200);
+    assert_eq!(c.get(format!("{}/admin", g.url)).send().await.unwrap().status(), 200);
+
+    // Operator routes refuse anyone else.
+    for path in ["/v1/admin/summary", "/v1/pools", "/v1/admin/nodes"] {
+        assert_eq!(c.get(format!("{}{path}", g.url)).send().await.unwrap().status(), 403, "{path}");
+        assert_eq!(c.get(format!("{}{path}", g.url)).header("x-globalobject-operator", "wrong").send().await.unwrap().status(), 403, "{path}");
+    }
+    let body = noise(3 * MB as usize, 9);
+    let (snap, files) = put(&m[0].client, "f", &body).await.unwrap();
+
+    let (code, s) = json(op(c.get(format!("{}/v1/admin/summary", g.url)))).await;
+    assert_eq!(code, 200);
+    assert_eq!(s["pools"], 1);
+    assert_eq!(s["accounts"]["active"], 4);
+    assert_eq!(s["nodes_online"], 4);
+    assert!(s["stored_bytes"].as_i64().unwrap() > 0);
+    assert_eq!(s["segments_unreadable"], 0);
+    let (_, pools) = json(op(c.get(format!("{}/v1/pools", g.url)))).await;
+    assert_eq!(pools[0]["members"], 4);
+    assert_eq!(pools[0]["id"], p.pool);
+    let (_, nodes) = json(op(c.get(format!("{}/v1/admin/nodes?pool={}", g.url, p.pool)))).await;
+    assert_eq!(nodes.as_array().unwrap().len(), 4);
+    assert!(nodes.as_array().unwrap().iter().any(|n| n["held"].as_i64().unwrap() > 0));
+
+    // The operator can invite into a private pool, which members other than the admin can't.
+    let (code, inv) = json(op(c.post(format!("{}/v1/pools/{}/invites", g.url, p.pool)))).await;
+    assert_eq!(code, 200);
+    assert!(inv["join_url"].as_str().unwrap().starts_with(&format!("{}/join/", g.url)));
+    assert!(m[1].client.invite().await.is_err());
+
+    // Metrics: request counts, grants, and the summary gauges.
+    let text = c.get(format!("{}/metrics", g.url)).send().await.unwrap().text().await.unwrap();
+    for series in ["globalobject_http_requests_total", "globalobject_grants_issued_total", "globalobject_nodes_online", "globalobject_segments_below_repair"] {
+        assert!(text.contains(series), "{series} missing from:\n{text}");
+    }
+    assert!(text.contains(r#"route="/v1/segments/begin""#), "routes are labelled by pattern");
+
+    // Losing a host shows up in the summary, and repair brings it back.
+    let host = g.pieces_of(m[0].client.id()).await.unwrap()[0].2;
+    m.iter().flat_map(|x| x.nodes.iter()).find(|n| n.id == host).unwrap().kill();
+    let (cc, url) = (c.clone(), g.url.clone());
+    assert!(
+        eventually(Duration::from_secs(20), || {
+            let r = op(cc.get(format!("{url}/v1/admin/summary")));
+            async move { json(r).await.1["nodes_online"] == 3 }
+        })
+        .await
+    );
+    assert!(get(&m[0].client, &snap, &files, "f").await.unwrap() == body);
+
+    // Removing a member: read-only at once, and its nodes drain.
+    let victim = m[3].client.id();
+    let (code, _) = json(op(c.post(format!("{}/v1/pools/{}/members/{victim}/remove", g.url, p.pool)))).await;
+    assert_eq!(code, 200);
+    assert_eq!(q::account(g.db(), victim).await.state, "read_only");
+}

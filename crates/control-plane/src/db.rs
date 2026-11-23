@@ -367,6 +367,9 @@ pub fn to_bson<T: Serialize>(v: &T) -> Bson {
     bson::to_bson(v).expect("plain data serialises to BSON")
 }
 
+/// Transactions retried, process-wide. Exported as a metric.
+pub static TXN_RETRIES: std::sync::LazyLock<prometheus_client::metrics::counter::Counter> = std::sync::LazyLock::new(Default::default);
+
 /// Attempts before a transient transaction error is returned to the caller.
 pub const TXN_ATTEMPTS: u32 = 10;
 
@@ -375,6 +378,7 @@ pub const TXN_ATTEMPTS: u32 = 10;
 /// them out. Attempt 9 waits at most 180 ms.
 pub async fn backoff(attempt: u32) {
     use rand::Rng;
+    TXN_RETRIES.inc();
     let ms = rand::thread_rng().gen_range(5..20) * u64::from(attempt);
     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
 }

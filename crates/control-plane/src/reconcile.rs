@@ -359,6 +359,7 @@ pub async fn finish_repair(s: &Shared, node: i64, req: &RepairDone) -> DbResult<
         Ok::<_, db::Error>(true)
     })?;
     if moved {
+        s.metrics.repairs_completed.inc();
         ledger(&s.db, g.pool, g.owner, "repair", rc.bytes as i64, &seg).await?;
     }
     Ok(())
@@ -506,6 +507,8 @@ async fn audit_round(s: &Arc<Shared>) -> DbResult<()> {
                 continue;
             }
         }
+        let result = if passed { "pass" } else { "fail" };
+        s.metrics.audits.get_or_create(&crate::ops::ResultLabels { result: result.into() }).inc();
         if passed {
             s.db.nodes.update_one(doc! {"_id": host}, doc! {"$inc": {"audit_ok": 1_i64}}).await?;
         } else {

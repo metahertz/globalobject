@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GlobalObject</title>
+<style>
+:root{--bg:#fff;--fg:#1b1f24;--muted:#5b6470;--card:#f5f6f8;--line:#dfe2e6;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--accent:#0969da;--bar:#dfe2e6}
+@media (prefers-color-scheme:dark){:root{--bg:#16181c;--fg:#e6e6e6;--muted:#9aa3ad;--card:#20232a;--line:#30343c;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--accent:#58a6ff;--bar:#30343c}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;gap:1rem;align-items:center;justify-content:space-between;padding:.8rem 1rem;border-bottom:1px solid var(--line);flex-wrap:wrap}
+h1{font-size:1.1rem;margin:0}h2{font-size:1rem;margin:1.6rem 0 .6rem}main{max-width:60rem;margin:0 auto;padding:0 1rem 3rem}
+.pill{display:inline-block;padding:.15rem .6rem;border-radius:999px;font-size:.85rem;font-weight:600;background:var(--card)}
+.pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.bad{color:var(--bad)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:.7rem;margin-top:1rem}
+.card{background:var(--card);border-radius:10px;padding:.9rem 1rem}.card h3{margin:0 0 .4rem;font-size:.85rem;color:var(--muted);font-weight:600}
+.big{font-size:1.25rem;font-weight:600}.muted{color:var(--muted)}.small{font-size:.85rem}
+.bar{height:.5rem;background:var(--bar);border-radius:999px;overflow:hidden;margin:.5rem 0 .3rem}.bar>div{height:100%;background:var(--accent)}
+.bar.warn>div{background:var(--warn)}.bar.bad>div{background:var(--bad)}
+.tablewrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600}td.mono{font-family:ui-monospace,monospace}
+button,input,textarea{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:.35rem .7rem}
+button{cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button:disabled{opacity:.5;cursor:default}
+label{display:block;margin:.6rem 0 .2rem;font-weight:600;font-size:.9rem}input,textarea{width:100%}textarea{min-height:5rem}
+#log{font-family:ui-monospace,monospace;font-size:.8rem;max-height:16rem;overflow:auto;background:var(--card);border-radius:8px;padding:.6rem}
+#log .error{color:var(--bad)}#log .warn{color:var(--warn)}#msg{min-height:1.4rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>GlobalObject</h1>
+  <span><span id="health" class="pill">Loading…</span> <button id="backupnow" class="primary">Back up now</button></span>
+</header>
+<main>
+  <div id="msg" class="muted small"></div>
+  <div class="cards">
+    <div class="card"><h3>Backup space</h3><div id="quota" class="big">…</div><div id="quotabar" class="bar"><div></div></div><div id="quotanote" class="muted small"></div></div>
+    <div class="card"><h3>Disk you share</h3><div id="slice" class="big">…</div><div id="slicebar" class="bar"><div></div></div><div id="slicenote" class="muted small"></div></div>
+    <div class="card"><h3>Last backup</h3><div id="last" class="big">…</div><div id="lastnote" class="muted small"></div></div>
+    <div class="card"><h3>Next backup</h3><div id="next" class="big">…</div><div id="nextnote" class="muted small"></div></div>
+  </div>
+
+  <h2>Snapshots</h2>
+  <div class="tablewrap"><table><thead><tr><th>When</th><th>Folders</th><th>Files</th><th>Size</th><th></th></tr></thead><tbody id="snaps"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
+
+  <h2>Settings</h2>
+  <form id="settings">
+    <label for="sslice">Disk to share</label><input id="sslice" placeholder="500GB">
+    <div class="muted small">Shrinking moves other members' pieces elsewhere first, so space is freed gradually.</div>
+    <label for="spaths">Folders to back up, one per line (full paths)</label><textarea id="spaths"></textarea>
+    <label for="severy">Back up every (hours, 0 for never)</label><input id="severy" type="number" min="0" step="1">
+    <p><button class="primary">Save</button></p>
+  </form>
+
+  <h2>Activity</h2>
+  <div id="log"></div>
+  <p class="muted small">Account <span id="acct">…</span> on <span id="cp">…</span>. Your files are encrypted on this machine before they leave it.</p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const size = (n) => { const u = ["B","KB","MB","GB","TB","PB"]; let i = 0; n = Number(n) || 0; while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; } return (i ? n.toFixed(n >= 100 ? 0 : 1) : n) + " " + u[i]; };
+const when = (t) => { if (!t) return "never"; const d = Date.now() / 1000 - t; const f = (x, u) => `${Math.round(x)} ${u}${Math.round(x) === 1 ? "" : "s"}`;
+  if (Math.abs(d) < 90) return d >= 0 ? "just now" : "in a moment";
+  const s = Math.abs(d) < 5400 ? f(Math.abs(d) / 60, "minute") : Math.abs(d) < 172800 ? f(Math.abs(d) / 3600, "hour") : f(Math.abs(d) / 86400, "day");
+  return d >= 0 ? s + " ago" : "in " + s; };
+let settingsLoaded = false, wasRunning = false;
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json", "x-globalobject": "1" }, body: JSON.stringify(body) };
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function bar(id, frac) { const b = $(id); const p = Math.max(0, Math.min(1, frac || 0)); b.firstElementChild.style.width = (p * 100).toFixed(1) + "%"; b.className = "bar" + (p > 0.95 ? " bad" : p > 0.8 ? " warn" : ""); }
+
+async function refresh() {
+  let s;
+  try { s = await api("/api/status"); } catch (e) { $("health").textContent = "Agent unreachable"; $("health").className = "pill bad"; return; }
+  const a = s.account, ag = s.agent, last = ag.last_backup;
+  $("acct").textContent = a ? `${a.account} (pool ${a.pool})` : "?"; $("cp").textContent = s.control_plane;
+  let health = ["ok", "All good"];
+  if (s.account_error) health = ["bad", "Can't reach the control plane"];
+  else if (a && a.state !== "active") health = ["bad", a.state === "read_only" ? "Read-only: share more disk" : "Account " + a.state];
+  else if (last && last.ok === false) health = ["warn", "Last backup failed"];
+  else if (a && a.quota_raw && a.used_raw / a.quota_raw > 0.95) health = ["warn", "Backup space nearly full"];
+  else if (!last && !ag.running) health = ["warn", "No backup yet"];
+  $("health").textContent = ag.running ? (ag.running.kind === "restore" ? "Restoring…" : "Backing up…") : health[1];
+  $("health").className = "pill " + (ag.running ? "" : health[0]);
+  $("backupnow").disabled = !!ag.running;
+  if (a) {
+    $("quota").textContent = `${size(a.used_raw)} of ${size(a.quota_raw)}`; bar("quotabar", a.quota_raw ? a.used_raw / a.quota_raw : 0);
+    $("quotanote").textContent = `Includes ${a.policy.k === 1 ? a.policy.n + " copies" : a.policy.k + "-of-" + a.policy.n + " coding"}. Grows as your shared disk is used.`;
+  } else { $("quota").textContent = "—"; $("quotanote").textContent = s.account_error || ""; }
+  $("slice").textContent = `${size(ag.slice_used)} of ${size(ag.slice_size)} used`; bar("slicebar", ag.slice_size ? ag.slice_used / ag.slice_size : 0);
+  $("slicenote").textContent = `Node ${ag.node ?? "?"} · ${s.slice_dir}`;
+  $("last").textContent = last ? (last.ok ? "✓ " : last.ok === false ? "✗ " : "") + when(last.finished || last.started) : "Never";
+  $("lastnote").textContent = last ? last.message : "The first backup starts a minute after the agent does.";
+  $("next").textContent = ag.running ? "Running now" : ag.next_backup ? when(ag.next_backup) : "Not scheduled";
+  $("nextnote").textContent = s.every_hours ? `Every ${s.every_hours} hours: ${s.paths.length} folder${s.paths.length === 1 ? "" : "s"}` : "Scheduled backups are off.";
+  if (!settingsLoaded) { $("sslice").value = size(ag.slice_size).replace(" ", ""); $("spaths").value = (s.paths || []).join("\n"); $("severy").value = s.every_hours; settingsLoaded = true; window.restoreDir = s.restore_dir; }
+  if (wasRunning && !ag.running) loadSnaps();
+  wasRunning = !!ag.running;
+  const ev = await api("/api/events").catch(() => []);
+  $("log").innerHTML = ev.map((e) => `<div class="${e.level}">${new Date(e.at * 1000).toLocaleString()} ${esc(e.message)}</div>`).join("") || "<span class=muted>Nothing yet.</span>";
+}
+
+async function loadSnaps() {
+  try {
+    const snaps = (await api("/api/snapshots")).reverse();
+    $("snaps").innerHTML = snaps.map((x) => `<tr><td>${esc(new Date(x.time).toLocaleString())}</td><td>${esc(x.paths.join(", "))}</td><td>${x.files}</td><td>${size(x.bytes)}</td>
+      <td><button data-snap="${esc(x.id)}">Restore…</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted">No snapshots yet.</td></tr>`;
+  } catch (e) { $("snaps").innerHTML = `<tr><td colspan="5" class="muted">Couldn't list snapshots: ${esc(e.message)}</td></tr>`; }
+}
+
+$("snaps").addEventListener("click", async (ev) => {
+  const id = ev.target.dataset.snap; if (!id) return;
+  const dest = prompt("Restore into which folder? It must be new or empty, so nothing gets overwritten.", `${window.restoreDir || ""}/${id.slice(0, 8)}`);
+  if (!dest) return;
+  try { await api("/api/restore", { snapshot: id, dest }); $("msg").textContent = `Restoring into ${dest}. Progress shows under Activity.`; refresh(); }
+  catch (e) { $("msg").textContent = "Restore not started: " + e.message; }
+});
+$("backupnow").addEventListener("click", async () => {
+  try { await api("/api/backup", {}); $("msg").textContent = "Backup started."; refresh(); } catch (e) { $("msg").textContent = e.message; }
+});
+$("settings").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const paths = $("spaths").value.split("\n").map((x) => x.trim()).filter(Boolean);
+  try { await api("/api/settings", { slice: $("sslice").value, paths, every_hours: Number($("severy").value) }); $("msg").textContent = "Settings saved."; refresh(); }
+  catch (e) { $("msg").textContent = "Not saved: " + e.message; }
+});
+refresh(); loadSnaps();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

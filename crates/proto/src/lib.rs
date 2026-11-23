@@ -124,6 +124,10 @@ pub struct CreatePool {
 pub struct PoolCreated {
     pub pool: i64,
     pub admin_invite: String,
+    /// A link for the admin invite, for sending to a person. Present when the control plane
+    /// knows its public address.
+    #[serde(default)]
+    pub join_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +146,8 @@ pub struct AccountCreated {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InviteCreated {
     pub invite: String,
+    #[serde(default)]
+    pub join_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

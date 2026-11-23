@@ -1,0 +1,87 @@
+# On a version tag (v0.2.0, say): build binaries for Linux and macOS, publish them with
+# checksums and the install scripts as a GitHub release, and push the control-plane image to
+# GitHub's container registry. install.sh downloads from these releases.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, zig: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, zig: true }
+          - { target: x86_64-apple-darwin, os: macos-latest, zig: false }
+          - { target: aarch64-apple-darwin, os: macos-latest, zig: false }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # The control plane serves install.sh, so it needs to know where releases live.
+      - name: Point install.sh at this repository
+        run: sed -i.bak "s|^DEFAULT_REPO=\"\"|DEFAULT_REPO=\"$GITHUB_REPOSITORY\"|" install.sh && rm install.sh.bak
+      - run: rustup target add ${{ matrix.target }}
+      - name: Install cargo-zigbuild (static Linux builds)
+        if: matrix.zig
+        run: pip3 install ziglang && cargo install cargo-zigbuild --locked
+      - name: Build
+        run: |
+          if [ "${{ matrix.zig }}" = true ]; then build="cargo zigbuild"; else build="cargo build"; fi
+          $build --release --locked --target ${{ matrix.target }} -p globalobject-client -p globalobject-node -p globalobject-control-plane
+      - name: Package
+        run: |
+          out=target/${{ matrix.target }}/release
+          mkdir dist
+          tar -czf dist/globalobject-${{ matrix.target }}.tar.gz -C "$out" globalobject globalobject-node
+          tar -czf dist/globalobject-control-plane-${{ matrix.target }}.tar.gz -C "$out" globalobject-control-plane
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and install scripts
+        run: |
+          sed -i "s|^DEFAULT_REPO=\"\"|DEFAULT_REPO=\"$GITHUB_REPOSITORY\"|" install.sh
+          cp install.sh deploy/install-server.sh dist/
+          cd dist && sha256sum *.tar.gz > SHA256SUMS
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Point install.sh at this repository
+        run: sed -i "s|^DEFAULT_REPO=\"\"|DEFAULT_REPO=\"$GITHUB_REPOSITORY\"|" install.sh
+      - name: Image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-control-plane" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/compose/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.ref_name }}
+            ${{ env.IMAGE }}:latest

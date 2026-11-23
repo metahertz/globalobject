@@ -9,10 +9,46 @@ contribute, and your download speed by what your link contributes.
 The storage, crypto and transport are existing open-source projects: restic's repository format through `rustic_core`,
 `iroh` and `iroh-blobs` for peers, and PASETO tokens through `pasetors`. See [docs/dependencies.md](docs/dependencies.md).
 
+## Join a pool
+
+Someone running a pool sends you a join link. Opening it shows one command for Linux or macOS:
+
+```sh
+curl -fsSL https://cp.example.org/install.sh | sh -s -- --join https://cp.example.org/join/<invite>
+```
+
+It installs `globalobject`, then asks how much disk to share and which folders to back up, gives you a 12-word
+recovery phrase, and starts a background service. After that:
+
+```sh
+globalobject status       # is everything healthy?
+globalobject dashboard    # the same, in your browser, plus restores and settings
+globalobject backup       # back up now, rather than waiting for the schedule
+```
+
+Coming back on a new machine: `globalobject setup --restore --server https://cp.example.org`, then type your phrase.
+See [docs/user-guide.md](docs/user-guide.md).
+
+## Run a pool
+
+On a server with Docker and a DNS name pointing at it:
+
+```sh
+git clone <this repository> && cd globalobject
+./deploy/install-server.sh --domain cp.example.org --monitoring
+```
+
+That starts MongoDB, the control plane, HTTPS through Caddy, nightly database backups and Prometheus with alerts, then
+creates a first pool and prints its join link. Manage it from the dashboard at `https://cp.example.org/admin` or with
+`globalobject-control-plane admin` (`status`, `pools`, `create-pool`, `invite`, `nodes`, `remove-member`). See
+[docs/operations.md](docs/operations.md).
+
 ## Documents
 
 | | |
 |---|---|
+| [docs/user-guide.md](docs/user-guide.md) | Joining, the dashboard, restoring, changing what you share |
+| [docs/operations.md](docs/operations.md) | Running a control plane: deploy, upgrade, back up, monitor, alerts |
 | [docs/status.md](docs/status.md) | What's built, what was verified, and what isn't done |
 | [docs/architecture.md](docs/architecture.md) | How it works, and why |
 | [docs/threat-model.md](docs/threat-model.md) | Who could attack it, and what remains exposed |
@@ -35,7 +71,7 @@ The storage, crypto and transport are existing open-source projects: restic's re
 | `crates/sim` | The simulator |
 | `crates/e2e` | End-to-end tests |
 
-## Running it
+## Build and test from source
 
 You need Rust and MongoDB running as a replica set, because the control plane uses transactions. One node is enough:
 
@@ -50,21 +86,12 @@ python3 scripts/check-licences.py    # AGPL and GPL stay out
 cargo run --release -p globalobject-sim > report.md    # full simulation
 
 cargo build --release -p globalobject-control-plane -p globalobject-node -p globalobject-client
-scripts/grid.sh    # real processes: back up, kill -9 a node, repair, restore
+scripts/grid.sh    # real processes: an operator, five owners joining with setup, backup, kill -9, repair, restore
 LARGE_MB=2000 scripts/grid.sh    # the same, with a 2 GB file
 ```
 
-`scripts/grid.sh` is the quickest way to see it work. For a manual setup, start `globalobject-control-plane`, create a pool with
-`POST /v1/pools` using the operator token, then use `globalobject register`, `globalobject account` and `globalobject-node`. The script shows each step.
-
-The client is snapshot-based:
-
-```sh
-globalobject backup ~/documents
-globalobject snapshots
-globalobject restore <snapshot> ./restored
-globalobject forget --keep-last 7 --prune   # reclaim space from older snapshots
-```
+Releases come from pushing a `v*` tag: `.github/workflows/release.yml` builds Linux and macOS binaries, publishes them
+with checksums, and pushes the control-plane image to GitHub's container registry.
 
 ## Licence
 

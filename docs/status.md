@@ -12,6 +12,81 @@ Storage, crypto and transport are now existing open-source projects, rather than
 | 2. Simulator | Done. See `sim-report.md`, including its limits |
 | 3. Prototype | Done for its scope, and migrated onto `rustic_core`, `iroh`, `iroh-blobs` and `pasetors` |
 
+## Install, setup and operations (2026-11-23)
+
+The aim was one command for a user to join, one for an operator to run a server, and an obvious way for each to see
+whether things are healthy. The user guide is in `user-guide.md` and the operator guide in `operations.md`.
+
+**Users**
+- `install.sh` downloads a release, checks its SHA-256, and runs `globalobject setup`.
+- `setup` takes a join link and handles:
+  - registering the account
+  - a 12-word BIP39 phrase, which it asks you to confirm
+  - the slice size (a quarter of free disk by default)
+  - which folders to back up, and how often
+  - installing the background service (a systemd user unit or a macOS LaunchAgent)
+- `globalobject agent` runs the storage slice in-process, scheduled backups with retention, and a dashboard on
+  127.0.0.1.
+  - The dashboard needs a token cookie, accepts only a local Host header, and requires a custom header on POST.
+- There's a readable `status` command, and `slice`, `paths` and `service` commands.
+- `setup --restore` finds the account from the phrase alone, through a new `GET /v1/accounts/whoami` signed with a
+  `k<public key>` id.
+- Settings live in `config.toml`. The phrase lives in a `credentials` file readable only by its owner, which
+  unattended backups need.
+
+**Operators**
+- `deploy/install-server.sh` starts the Compose stack and creates the first pool. The stack is:
+  - MongoDB
+  - the control plane
+  - Caddy, for HTTPS
+  - nightly `mongodump`
+  - Prometheus with alert rules (optional)
+- `globalobject-control-plane admin` covers `status`, `pools`, `create-pool`, `invite`, `nodes` and
+  `remove-member`.
+- The control plane serves:
+  - `/healthz`, `/readyz` and `/metrics`
+  - an operator dashboard at `/admin`
+  - join pages at `/join/<invite>`
+  - `/install.sh`
+- Operators can invite to, and remove members from, any pool.
+- Releases come from `.github/workflows/release.yml`.
+
+**Behaviour that changed**
+- A node registering with no site gets one derived from its address: the IPv4 /24 or IPv6 /48. `X-Forwarded-For`
+  counts only from `--trusted-proxy` addresses. Users no longer choose their own failure domain.
+- `globalobject-node` takes sizes like `500GB`. Its `--site` and `--asn` flags are now optional.
+
+**Not done**
+- The standalone node has no config file. Environment variables cover it.
+- There's no OS keyring for the phrase.
+- There's no self-update command; re-running `install.sh` upgrades.
+- Windows isn't supported.
+
+**Verified** in the sandbox container on 2026-11-23:
+- clippy (with `-D warnings`), fmt and shellcheck are clean, and the licence check passes.
+- All 46 end-to-end tests pass, including two new ones:
+  - `u01` covers the whole user path: join link, `setup`, the agent's slice, a backup and a restore from the
+    dashboard, settings, and recovering the account from the phrase alone. It also checks the dashboard's token,
+    Host and CSRF rules.
+  - `u02` covers the operator side: health, operator authentication, summary counts, invites to a private pool,
+    metrics and member removal.
+- `scripts/grid.sh` runs the real binaries the new way, with five owners joining through `setup` and running
+  `agent`. With a 300 MB file it passes: the killed owner's node held 308 MB, and repair moved its 16 pieces
+  elsewhere.
+- That demo caught two problems in this work, both fixed:
+  - The script killed a shell wrapper rather than the agent, so nothing was really lost.
+  - Backups run from the command line didn't show in `status`.
+
+**Not run here**
+- macOS: launchd, and the macOS release builds.
+- systemd user units. The container has no systemd user session, so the unit text is checked only by a golden test,
+  and `setup` was tested with `--no-service`.
+- Docker Compose, Caddy, Prometheus and its alert rules.
+- The release workflow, and publishing the image.
+- `install.sh` was tested against a local directory laid out like a release. That covers download, checksum and
+  install, and it refuses a tampered archive. It was not tested against GitHub. It needs a repository: there's no
+  remote yet.
+
 ## Partial reads, reclaim and local parity (2026-11-08)
 
 Built from the Ceph and OpenZFS research, as designed in `plans/reads-reclaim-repair.md`:
