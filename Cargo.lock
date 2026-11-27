@@ -1898,7 +1898,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-client"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-control-plane"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-crypto"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "blake3",
@@ -1976,7 +1976,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-e2e"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "futures",
@@ -2000,7 +2000,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-net"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bao-tree",
@@ -2016,7 +2016,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-node"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bytesize",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-policy"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "rand 0.8.8",
  "serde",
@@ -2049,7 +2049,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-proto"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "globalobject-crypto",
  "globalobject-policy",
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-segment"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "reed-solomon-erasure",
  "thiserror 1.0.69",
@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "globalobject-sim"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "globalobject-policy",
  "rand 0.8.8",

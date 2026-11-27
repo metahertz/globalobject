@@ -11,7 +11,18 @@ permissions:
   packages: write
 
 jobs:
+  # A tag that doesn't match the crate version would ship binaries reporting the wrong version.
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ "v$crate" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME but Cargo.toml says $crate"; exit 1; }
+
   build:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -33,10 +44,10 @@ jobs:
       - name: Build
         run: |
           if [ "${{ matrix.zig }}" = true ]; then build="cargo zigbuild"; else build="cargo build"; fi
-          $build --release --locked --target ${{ matrix.target }} -p globalobject-client -p globalobject-node -p globalobject-control-plane
+          $build --profile dist --locked --target ${{ matrix.target }} -p globalobject-client -p globalobject-node -p globalobject-control-plane
       - name: Package
         run: |
-          out=target/${{ matrix.target }}/release
+          out=target/${{ matrix.target }}/dist
           mkdir dist
           tar -czf dist/globalobject-${{ matrix.target }}.tar.gz -C "$out" globalobject globalobject-node
           tar -czf dist/globalobject-control-plane-${{ matrix.target }}.tar.gz -C "$out" globalobject-control-plane
