@@ -1,0 +1,14 @@
+# The published control-plane image: the release's static musl binaries in a small base, one per
+# architecture. The release workflow lays out the context as bin/amd64/ and bin/arm64/. To build
+# from source instead, use the Dockerfile next to this one.
+FROM debian:bookworm-slim
+ARG TARGETARCH
+# curl is for the health check.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home-dir /data globalobject && mkdir -p /data && chown globalobject /data
+COPY bin/${TARGETARCH}/ /usr/local/bin/
+USER globalobject
+WORKDIR /data
+EXPOSE 7400
+HEALTHCHECK --interval=10s --timeout=3s --retries=6 CMD curl -fsS http://127.0.0.1:7400/readyz || exit 1
+CMD ["globalobject-control-plane", "--listen", "0.0.0.0:7400", "--key-file", "/data/control-plane.key"]

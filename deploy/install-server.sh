@@ -2,7 +2,7 @@
 # Stand up (or upgrade) a GlobalObject control plane with Docker Compose.
 #
 #   ./deploy/install-server.sh --domain cp.example.org
-#   curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/deploy/install-server.sh | sh -s -- --domain cp.example.org
+#   curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install-server.sh | sh -s -- --domain cp.example.org
 #
 # Options:
 #   --domain NAME   public DNS name; Caddy gets an HTTPS certificate for it (ports 80, 443)
@@ -11,7 +11,14 @@
 #   --dir DIR       where to keep the Compose files when not run from a checkout
 #
 # Re-running upgrades: it pulls or rebuilds images and restarts, keeping .env and data.
+#
+# Environment: GLOBALOBJECT_REPO (owner/name), GLOBALOBJECT_VERSION (release tag, such as v0.1.0),
+# GLOBALOBJECT_IMAGE (overrides the image entirely).
 set -eu
+
+# Filled in by the release workflow: the copy attached to a release installs that release.
+DEFAULT_REPO=""
+DEFAULT_VERSION=""
 
 say() { printf '%s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
@@ -41,24 +48,38 @@ here="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
 if [ -n "$here" ] && [ -f "$here/compose/docker-compose.yml" ] && [ -z "$dir" ]; then
   dir="$here/compose"
 else
-  repo="${GLOBALOBJECT_REPO:-}"
+  repo="${GLOBALOBJECT_REPO:-$DEFAULT_REPO}"
   [ -n "$repo" ] || die "not in a checkout: set GLOBALOBJECT_REPO=owner/name, or clone the repository and run deploy/install-server.sh"
-  ref="${GLOBALOBJECT_REF:-main}"
+  version="${GLOBALOBJECT_VERSION:-$DEFAULT_VERSION}"
+  # The Compose files come from the same release as the image, or from main when unpinned.
+  ref="${GLOBALOBJECT_REF:-${version:-main}}"
   dir="${dir:-$HOME/globalobject-server}"
   mkdir -p "$dir"
   for f in docker-compose.yml Caddyfile prometheus.yml alerts.yml; do
     curl -fsSL "https://raw.githubusercontent.com/$repo/$ref/deploy/compose/$f" -o "$dir/$f" || die "couldn't fetch $f"
   done
-  [ -n "${GLOBALOBJECT_IMAGE:-}" ] || GLOBALOBJECT_IMAGE="ghcr.io/$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')-control-plane:latest"
+  [ -n "${GLOBALOBJECT_IMAGE:-}" ] || GLOBALOBJECT_IMAGE="ghcr.io/$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')-control-plane:${version:-latest}"
 fi
 cd "$dir"
 env_file="$dir/.env"
+# The image this run wants. Loading an existing .env below would otherwise bring back the old one.
+want_image="${GLOBALOBJECT_IMAGE:-}"
 
 # Keep an existing .env: it holds the operator token, and changing it locks out the admin CLI.
 if [ -f "$env_file" ]; then
   say "Using existing $env_file"
   # shellcheck disable=SC1090
   . "$env_file"
+  # Upgrading: record the new image in .env, so later plain "docker compose" commands use it too.
+  if [ -n "$want_image" ] && [ "$want_image" != "${GLOBALOBJECT_IMAGE:-}" ]; then
+    umask 077
+    grep -v '^GLOBALOBJECT_IMAGE=' "$env_file" >"$env_file.new" || true
+    printf 'GLOBALOBJECT_IMAGE=%s\n' "$want_image" >>"$env_file.new"
+    cat "$env_file.new" >"$env_file" && rm -f "$env_file.new"
+    umask 022
+    say "Image: $want_image"
+  fi
+  [ -z "$want_image" ] || GLOBALOBJECT_IMAGE="$want_image"
   [ -z "$domain" ] || [ "$domain" = "${GLOBALOBJECT_DOMAIN:-}" ] || say "note: --domain differs from GLOBALOBJECT_DOMAIN in .env; edit .env to change it"
 else
   if [ "$tls" = 1 ] && [ -z "$domain" ]; then
@@ -122,7 +143,7 @@ fi
 say ""
 say "The control plane is running at $GLOBALOBJECT_PUBLIC_URL"
 say "  Operator dashboard:  $GLOBALOBJECT_PUBLIC_URL/admin   (token: GLOBALOBJECT_OPERATOR_TOKEN in $env_file)"
-say "  Invite someone:      cd $dir && docker compose exec control-plane globalobject-control-plane admin invite --pool 1"
+say "  Invite someone:      cd $dir && docker compose exec control-plane globalobject-control-plane admin invite 1"
 say "  Health:              cd $dir && docker compose exec control-plane globalobject-control-plane admin status"
 say "  Database backups:    nightly, in the 'mongobackup' volume (copy them off this host too)"
 [ "${COMPOSE_PROFILES#*monitoring}" = "${COMPOSE_PROFILES}" ] || say "  Prometheus:          http://127.0.0.1:9090 (alerts in alerts.yml)"

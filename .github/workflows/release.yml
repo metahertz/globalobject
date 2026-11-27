@@ -56,7 +56,9 @@ jobs:
           merge-multiple: true
       - name: Checksums and install scripts
         run: |
-          sed -i "s|^DEFAULT_REPO=\"\"|DEFAULT_REPO=\"$GITHUB_REPOSITORY\"|" install.sh
+          # Point both scripts at this repository; the server script also pins this release's image.
+          sed -i "s|^DEFAULT_REPO=\"\"|DEFAULT_REPO=\"$GITHUB_REPOSITORY\"|" install.sh deploy/install-server.sh
+          sed -i "s|^DEFAULT_VERSION=\"\"|DEFAULT_VERSION=\"$GITHUB_REF_NAME\"|" deploy/install-server.sh
           cp install.sh deploy/install-server.sh dist/
           cd dist && sha256sum *.tar.gz > SHA256SUMS
       - name: Publish the release
@@ -64,14 +66,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
 
+  # The image reuses the release's static Linux binaries, so it runs exactly what the release ships,
+  # and needs no Rust build of its own.
   image:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Point install.sh at this repository
-        run: sed -i "s|^DEFAULT_REPO=\"\"|DEFAULT_REPO=\"$GITHUB_REPOSITORY\"|" install.sh
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*-linux-musl
+          path: dist
+          merge-multiple: true
+      - name: Lay out binaries per architecture
+        run: |
+          for pair in amd64:x86_64 arm64:aarch64; do
+            arch=${pair%%:*}; target=${pair#*:}-unknown-linux-musl
+            mkdir -p image/bin/$arch
+            for f in dist/globalobject-$target.tar.gz dist/globalobject-control-plane-$target.tar.gz; do
+              tar -xzf "$f" -C image/bin/$arch
+            done
+          done
+          ls -l image/bin/*
       - name: Image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}-control-plane" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -79,9 +99,21 @@ jobs:
           password: ${{ github.token }}
       - uses: docker/build-push-action@v6
         with:
-          context: .
-          file: deploy/compose/Dockerfile
+          context: image
+          file: deploy/compose/Dockerfile.release
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ github.ref_name }}
             ${{ env.IMAGE }}:latest
+          # The source label links the package to this repository on GitHub.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT OR Apache-2.0
+            org.opencontainers.image.description=GlobalObject control plane
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.licenses=MIT OR Apache-2.0
+            index:org.opencontainers.image.description=GlobalObject control plane

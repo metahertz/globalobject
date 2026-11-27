@@ -20,12 +20,14 @@ git clone <repository> && cd globalobject
 ./deploy/install-server.sh --domain cp.example.org --monitoring
 ```
 
-Without a checkout, you can run the script directly. Set `GLOBALOBJECT_REPO=owner/name`, and it fetches the Compose
-files and uses the published image:
+Without a checkout, run the copy attached to the latest release. It fetches that release's Compose files and uses
+that release's image, `ghcr.io/metahertz/globalobject-control-plane:<version>`, built for amd64 and arm64:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/<owner>/<name>/main/deploy/install-server.sh | GLOBALOBJECT_REPO=<owner>/<name> sh -s -- --domain cp.example.org
+curl -fsSL https://github.com/metahertz/globalobject/releases/latest/download/install-server.sh | sh -s -- --domain cp.example.org
 ```
+
+`GLOBALOBJECT_VERSION=v0.1.1` installs a particular release instead. `GLOBALOBJECT_IMAGE` overrides the image entirely.
 
 The script:
 
@@ -47,7 +49,9 @@ The pool is private with 3 copies. Its first member becomes its admin.
 `--no-tls` skips Caddy and serves plain HTTP on port 7400. Use it only on a LAN or for testing: request signatures
 protect integrity, but nothing on the wire is encrypted.
 
-**Upgrading:** run `install-server.sh` again. It keeps `.env` and all the data volumes.
+**Upgrading:** run the install command again. It moves `.env` to the new release's image, and keeps the operator
+token and all the data volumes. From a checkout, `git pull` first, then run `./deploy/install-server.sh`, which
+rebuilds the image from source.
 
 ## Managing
 

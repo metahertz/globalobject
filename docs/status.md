@@ -82,10 +82,16 @@ whether things are healthy. The user guide is in `user-guide.md` and the operato
 - systemd user units. The container has no systemd user session, so the unit text is checked only by a golden test,
   and `setup` was tested with `--no-service`.
 - Docker Compose, Caddy, Prometheus and its alert rules.
-- The release workflow, and publishing the image.
 - `install.sh` was tested against a local directory laid out like a release. That covers download, checksum and
-  install, and it refuses a tampered archive. It was not tested against GitHub. It needs a repository: there's no
-  remote yet.
+  install, and it refuses a tampered archive. It was not tested against GitHub.
+
+**Release (2026-11-27)**
+- `v0.1.0` was released from GitHub Actions: binaries, checksums, install scripts and an amd64 image. Anonymous pulls
+  of `ghcr.io/metahertz/globalobject-control-plane:v0.1.0` work (index, config and all layers fetched).
+- Since then the image is built from the release's musl binaries for amd64 and arm64, carries the OCI source label,
+  and the release's `install-server.sh` pins its own version. Upgrades rewrite the image in `.env`. That upgrade
+  path was tested with stand-ins for `docker` and `curl`, not real Docker. The multi-arch build hasn't run yet: it
+  runs on the next tag.
 
 ## Partial reads, reclaim and local parity (2026-11-08)
 

@@ -113,8 +113,8 @@ holds anyone's files or keys, and no backup data passes through it.
 On a Linux server with Docker, and a DNS name pointing at it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/metahertz/globalobject/main/deploy/install-server.sh \
-  | GLOBALOBJECT_REPO=metahertz/globalobject sh -s -- --domain cp.example.org --monitoring
+curl -fsSL https://github.com/metahertz/globalobject/releases/latest/download/install-server.sh \
+  | sh -s -- --domain cp.example.org --monitoring
 ```
 
 Or, from a checkout: `./deploy/install-server.sh --domain cp.example.org --monitoring`.
@@ -148,7 +148,8 @@ goadmin nodes --pool 1
 ```
 
 **Copy the database backups off the server.** If the database is lost, every pool loses track of where its pieces
-are. Upgrading is running the install command again. See the [operations guide](docs/operations.md) for monitoring,
+are. Upgrading is running the install command again: each release's script installs that release's image, for amd64
+or arm64. See the [operations guide](docs/operations.md) for monitoring,
 alerts and restores.
 
 ## How it works
